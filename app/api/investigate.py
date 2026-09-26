@@ -5,10 +5,11 @@ from app.services.whois_lookup import get_whois_info
 from app.services.subdomain_lookup import get_subdomains, analyze_subdomain_security
 from app.services.ip_lookup import investigate_ip
 from app.services.ssl_lookup import analyze_ssl_certificate
-from app.models.dns_models import DNSInvestigationResult
 from app.services.headers_lookup import get_security_headers, analyze_security_headers
 from app.services.email_auth_lookup import check_email_authentication
 from app.services.virustotal_lookup import check_url_reputation
+from app.services.mitre_mapping import map_findings_to_mitre
+from app.models.dns_models import DNSInvestigationResult
 
 router = APIRouter()
 
@@ -63,6 +64,8 @@ def investigate_ssl(domain: str):
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     return analyze_ssl_certificate(domain)
+
+
 @router.get("/headers/{domain}")
 def investigate_headers(domain: str):
     if not DOMAIN_PATTERN.match(domain):
@@ -70,12 +73,36 @@ def investigate_headers(domain: str):
 
     headers = get_security_headers(domain)
     return analyze_security_headers(headers)
+
+
 @router.get("/email-auth/{domain}")
 def investigate_email_auth(domain: str):
     if not DOMAIN_PATTERN.match(domain):
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     return check_email_authentication(domain)
+
+
 @router.get("/url-reputation")
 def investigate_url_reputation(url: str = Query(..., description="Full URL to check, e.g. https://example.com")):
     return check_url_reputation(url)
+
+
+@router.get("/mitre/{domain}")
+def investigate_mitre(domain: str):
+    if not DOMAIN_PATTERN.match(domain):
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    dns_records = get_dns_records(domain)
+    dns_findings = analyze_dns_security(dns_records)
+
+    email_result = check_email_authentication(domain)
+    email_findings = email_result["findings"]
+
+    all_findings = dns_findings + email_findings
+    mapped = map_findings_to_mitre(all_findings)
+
+    return {
+        "domain": domain,
+        "mapped_techniques": mapped
+    }
