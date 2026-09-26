@@ -1,5 +1,5 @@
 import re
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.services.dns_lookup import get_dns_records, analyze_dns_security
 from app.services.whois_lookup import get_whois_info
 from app.services.subdomain_lookup import get_subdomains, analyze_subdomain_security
@@ -8,6 +8,8 @@ from app.services.ssl_lookup import analyze_ssl_certificate
 from app.models.dns_models import DNSInvestigationResult
 from app.services.headers_lookup import get_security_headers, analyze_security_headers
 from app.services.email_auth_lookup import check_email_authentication
+from app.services.virustotal_lookup import check_url_reputation
+
 router = APIRouter()
 
 DOMAIN_PATTERN = re.compile(
@@ -74,3 +76,6 @@ def investigate_email_auth(domain: str):
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     return check_email_authentication(domain)
+@router.get("/url-reputation")
+def investigate_url_reputation(url: str = Query(..., description="Full URL to check, e.g. https://example.com")):
+    return check_url_reputation(url)
