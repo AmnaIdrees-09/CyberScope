@@ -6,6 +6,7 @@ from app.services.subdomain_lookup import get_subdomains, analyze_subdomain_secu
 from app.services.ip_lookup import investigate_ip
 from app.services.ssl_lookup import analyze_ssl_certificate
 from app.models.dns_models import DNSInvestigationResult
+from app.services.headers_lookup import get_security_headers, analyze_security_headers
 
 router = APIRouter()
 
@@ -60,3 +61,10 @@ def investigate_ssl(domain: str):
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     return analyze_ssl_certificate(domain)
+@router.get("/headers/{domain}")
+def investigate_headers(domain: str):
+    if not DOMAIN_PATTERN.match(domain):
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    headers = get_security_headers(domain)
+    return analyze_security_headers(headers)
