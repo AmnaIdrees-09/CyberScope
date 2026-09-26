@@ -7,7 +7,7 @@ from app.services.ip_lookup import investigate_ip
 from app.services.ssl_lookup import analyze_ssl_certificate
 from app.models.dns_models import DNSInvestigationResult
 from app.services.headers_lookup import get_security_headers, analyze_security_headers
-
+from app.services.email_auth_lookup import check_email_authentication
 router = APIRouter()
 
 DOMAIN_PATTERN = re.compile(
@@ -68,3 +68,9 @@ def investigate_headers(domain: str):
 
     headers = get_security_headers(domain)
     return analyze_security_headers(headers)
+@router.get("/email-auth/{domain}")
+def investigate_email_auth(domain: str):
+    if not DOMAIN_PATTERN.match(domain):
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    return check_email_authentication(domain)
