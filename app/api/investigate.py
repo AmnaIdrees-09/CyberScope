@@ -10,6 +10,7 @@ from app.services.email_auth_lookup import check_email_authentication
 from app.services.virustotal_lookup import check_url_reputation
 from app.services.mitre_mapping import map_findings_to_mitre
 from app.models.dns_models import DNSInvestigationResult
+from app.services.ai_summary import generate_plain_english_summary
 
 router = APIRouter()
 
@@ -105,4 +106,23 @@ def investigate_mitre(domain: str):
     return {
         "domain": domain,
         "mapped_techniques": mapped
+    }
+@router.get("/summary/{domain}")
+def investigate_summary(domain: str):
+    if not DOMAIN_PATTERN.match(domain):
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    dns_records = get_dns_records(domain)
+    dns_findings = analyze_dns_security(dns_records)
+
+    email_result = check_email_authentication(domain)
+    email_findings = email_result["findings"]
+
+    all_findings = dns_findings + email_findings
+    summary = generate_plain_english_summary(domain, all_findings)
+
+    return {
+        "domain": domain,
+        "summary": summary,
+        "findings_analyzed": len(all_findings)
     }
