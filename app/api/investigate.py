@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from app.services.dns_lookup import get_dns_records, analyze_dns_security
 from app.services.whois_lookup import get_whois_info
 from app.services.subdomain_lookup import get_subdomains, analyze_subdomain_security
+from app.services.ip_lookup import investigate_ip
 from app.models.dns_models import DNSInvestigationResult
 
 router = APIRouter()
@@ -45,3 +46,8 @@ def investigate_subdomains(domain: str):
         "subdomains": subdomains,
         "findings": findings
     }
+
+
+@router.get("/ip/{ip}")
+def investigate_ip_route(ip: str):
+    return investigate_ip(ip)
