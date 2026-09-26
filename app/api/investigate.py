@@ -2,6 +2,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from app.services.dns_lookup import get_dns_records, analyze_dns_security
 from app.services.whois_lookup import get_whois_info
+from app.services.subdomain_lookup import get_subdomains, analyze_subdomain_security
 from app.models.dns_models import DNSInvestigationResult
 
 router = APIRouter()
@@ -10,6 +11,7 @@ DOMAIN_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
     r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
 )
+
 
 @router.get("/investigate/{domain}", response_model=DNSInvestigationResult)
 def investigate_domain(domain: str):
@@ -28,3 +30,18 @@ def investigate_whois(domain: str):
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     return get_whois_info(domain)
+
+
+@router.get("/subdomains/{domain}")
+def investigate_subdomains(domain: str):
+    if not DOMAIN_PATTERN.match(domain):
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    subdomains = get_subdomains(domain)
+    findings = analyze_subdomain_security(subdomains)
+
+    return {
+        "domain": domain,
+        "subdomains": subdomains,
+        "findings": findings
+    }
