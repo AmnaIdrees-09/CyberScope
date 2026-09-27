@@ -11,7 +11,8 @@ from app.services.virustotal_lookup import check_url_reputation
 from app.services.mitre_mapping import map_findings_to_mitre
 from app.models.dns_models import DNSInvestigationResult
 from app.services.ai_summary import generate_plain_english_summary
-
+from fastapi.responses import Response
+from app.services.report_generator import generate_full_report
 router = APIRouter()
 
 DOMAIN_PATTERN = re.compile(
@@ -126,3 +127,14 @@ def investigate_summary(domain: str):
         "summary": summary,
         "findings_analyzed": len(all_findings)
     }
+@router.get("/report/{domain}")
+def generate_report(domain: str):
+    if not DOMAIN_PATTERN.match(domain):
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    pdf_bytes = generate_full_report(domain)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={domain}_report.pdf"}
+    )
