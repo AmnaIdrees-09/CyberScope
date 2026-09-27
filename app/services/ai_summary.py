@@ -5,7 +5,7 @@ from app.models.dns_models import SecurityFinding
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-3.5-flash-lite"
 
 
 def generate_plain_english_summary(domain: str, all_findings: list[SecurityFinding]) -> str:
