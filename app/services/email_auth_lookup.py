@@ -1,79 +1,104 @@
-import dns.resolver
-import logging
+import re
+
 from app.models.dns_models import SecurityFinding
+from app.services.dns_client import query
 
-logger = logging.getLogger(__name__)
+
+def _clean_txt(value: str) -> str:
+    # TXT values arrive as '"chunk1" "chunk2"'. Join the chunks, drop the quotes.
+    return re.sub(r'"\s+"', "", value).strip().strip('"')
 
 
-def _get_txt_records(name: str) -> list[str]:
-    try:
-        answers = dns.resolver.resolve(name, "TXT")
-        return [str(r) for r in answers]
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
-        return []
-    except Exception as e:
-        logger.error(f"TXT lookup failed for {name}: {e}")
-        return []
+def _dmarc_policy(record: str) -> str | None:
+    # Read the tags properly. A substring test would mistake "sp=reject"
+    # (the subdomain policy) for "p=reject".
+    for part in record.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.strip().lower() == "p":
+            value = value.strip().lower()
+            if value in ("none", "quarantine", "reject"):
+                return value
+    return None
 
 
 def check_email_authentication(domain: str) -> dict:
-    findings = []
+    findings: list[SecurityFinding] = []
 
-    # --- SPF: lives directly on the domain's own TXT records ---
-    domain_txt = _get_txt_records(domain)
-    spf_record = next((r for r in domain_txt if "v=spf1" in r), None)
+    # ---------- SPF: a TXT record on the domain itself ----------
+    txt_values, txt_status = query(domain, "TXT")
+    spf_records = [_clean_txt(v) for v in txt_values if "v=spf1" in v.lower()]
 
-    if spf_record:
+    if txt_status == "failed":
+        spf_status = "unknown"
         findings.append(SecurityFinding(
             severity="info",
-            message="SPF record found — this domain declares which mail servers are authorized to send on its behalf."
+            message="The SPF check could not complete (DNS lookup failed). Try again in a moment."
         ))
+    elif spf_records:
+        spf_status = "found"
+        findings.append(SecurityFinding(
+            severity="info",
+            message="SPF record found: this domain declares which mail servers are authorized to send on its behalf."
+        ))
+        if len(spf_records) > 1:
+            findings.append(SecurityFinding(
+                severity="warning",
+                message="Multiple SPF records found. Receivers may treat this as an error; a domain should publish exactly one."
+            ))
     else:
+        spf_status = "missing"
         findings.append(SecurityFinding(
             severity="critical",
-            message="No SPF record found — anyone can send email pretending to be from this domain."
+            message="No SPF record found: anyone can send email pretending to be from this domain."
         ))
 
-    # --- DMARC: lives on a special subdomain, _dmarc.<domain> ---
-    dmarc_txt = _get_txt_records(f"_dmarc.{domain}")
-    dmarc_record = next((r for r in dmarc_txt if "v=DMARC1" in r), None)
+    # ---------- DMARC: a TXT record on _dmarc.<domain> ----------
+    dmarc_values, dmarc_lookup = query(f"_dmarc.{domain}", "TXT")
+    dmarc_records = [_clean_txt(v) for v in dmarc_values if "v=dmarc1" in v.lower()]
+    dmarc_record = dmarc_records[0] if dmarc_records else None
+    dmarc_policy = _dmarc_policy(dmarc_record) if dmarc_record else None
 
-    dmarc_policy = None
-    if dmarc_record:
-        # The policy tag looks like p=none, p=quarantine, or p=reject
-        # somewhere inside the record string — extract it directly.
-        if "p=reject" in dmarc_record:
-            dmarc_policy = "reject"
-        elif "p=quarantine" in dmarc_record:
-            dmarc_policy = "quarantine"
-        elif "p=none" in dmarc_record:
-            dmarc_policy = "none"
-
+    if dmarc_lookup == "failed":
+        dmarc_status = "unknown"
+        findings.append(SecurityFinding(
+            severity="info",
+            message="The DMARC check could not complete (DNS lookup failed). Try again in a moment."
+        ))
+    elif dmarc_record is None:
+        dmarc_status = "missing"
+        findings.append(SecurityFinding(
+            severity="critical",
+            message="No DMARC record found: no instructions exist for handling spoofed email from this domain."
+        ))
+    else:
+        dmarc_status = "found"
         if dmarc_policy == "reject":
             findings.append(SecurityFinding(
                 severity="info",
-                message="DMARC record found with policy 'reject' — spoofed emails are actively blocked."
+                message="DMARC record found with policy 'reject': spoofed emails are actively blocked."
             ))
         elif dmarc_policy == "quarantine":
             findings.append(SecurityFinding(
                 severity="info",
-                message="DMARC record found with policy 'quarantine' — spoofed emails are sent to spam."
+                message="DMARC record found with policy 'quarantine': spoofed emails are sent to spam."
             ))
         elif dmarc_policy == "none":
             findings.append(SecurityFinding(
                 severity="warning",
-                message="DMARC record exists but policy is 'none' — spoofed emails are only monitored, not blocked."
+                message="DMARC record exists but policy is 'none': spoofed emails are only monitored, not blocked."
             ))
-    else:
-        findings.append(SecurityFinding(
-            severity="critical",
-            message="No DMARC record found — no instructions exist for handling spoofed email from this domain."
-        ))
+        else:
+            findings.append(SecurityFinding(
+                severity="warning",
+                message="A DMARC record exists but has no valid policy (p=) tag, so it is not enforcing anything."
+            ))
 
     return {
         "domain": domain,
-        "spf_record": spf_record,
+        "spf_record": spf_records[0] if spf_records else None,
+        "spf_status": spf_status,
         "dmarc_record": dmarc_record,
+        "dmarc_status": dmarc_status,
         "dmarc_policy": dmarc_policy,
-        "findings": findings
+        "findings": findings,
     }

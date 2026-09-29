@@ -1,18 +1,20 @@
+import ipaddress
+import logging
 import re
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, HTTPException, Query
-from app.services.dns_lookup import get_dns_records, analyze_dns_security
-from app.services.whois_lookup import get_whois_info
-from app.services.subdomain_lookup import get_subdomains, analyze_subdomain_security
-from app.services.ip_lookup import investigate_ip
-from app.services.ssl_lookup import analyze_ssl_certificate
-from app.services.headers_lookup import get_security_headers, analyze_security_headers
-from app.services.email_auth_lookup import check_email_authentication
-from app.services.virustotal_lookup import check_url_reputation
-from app.services.mitre_mapping import map_findings_to_mitre
-from app.models.dns_models import DNSInvestigationResult
-from app.services.ai_summary import generate_plain_english_summary
 from fastapi.responses import Response
+
+from app.models.analysis_models import AnalysisRequest
+from app.models.dns_models import DNSInvestigationResult, SecurityFinding
+from app.services import checks
+from app.services.ai_summary import generate_plain_english_summary
+from app.services.mitre_mapping import map_findings_to_mitre
 from app.services.report_generator import generate_full_report
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 DOMAIN_PATTERN = re.compile(
@@ -21,120 +23,89 @@ DOMAIN_PATTERN = re.compile(
 )
 
 
-@router.get("/investigate/{domain}", response_model=DNSInvestigationResult)
-def investigate_domain(domain: str):
+def _require_domain(domain: str) -> str:
+    domain = domain.strip().lower().rstrip(".")
     if not DOMAIN_PATTERN.match(domain):
         raise HTTPException(status_code=400, detail="Invalid domain format")
+    return domain
 
-    records = get_dns_records(domain)
-    findings = analyze_dns_security(records)
 
-    return DNSInvestigationResult(domain=domain, records=records, findings=findings)
+@router.get("/investigate/{domain}", response_model=DNSInvestigationResult)
+def investigate_domain(domain: str):
+    return checks.dns_check(_require_domain(domain))
 
 
 @router.get("/whois/{domain}")
 def investigate_whois(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
-
-    return get_whois_info(domain)
+    return checks.whois_check(_require_domain(domain))
 
 
 @router.get("/subdomains/{domain}")
 def investigate_subdomains(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
-
-    subdomains = get_subdomains(domain)
-    findings = analyze_subdomain_security(subdomains)
-
-    return {
-        "domain": domain,
-        "subdomains": subdomains,
-        "findings": findings
-    }
+    return checks.subdomain_check(_require_domain(domain))
 
 
 @router.get("/ip/{ip}")
 def investigate_ip_route(ip: str):
-    return investigate_ip(ip)
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid IP address")
+    return checks.ip_check(ip)
 
 
 @router.get("/ssl/{domain}")
 def investigate_ssl(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
-
-    return analyze_ssl_certificate(domain)
+    return checks.ssl_check(_require_domain(domain))
 
 
 @router.get("/headers/{domain}")
 def investigate_headers(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
-
-    headers = get_security_headers(domain)
-    return analyze_security_headers(headers)
+    return checks.headers_check(_require_domain(domain))
 
 
 @router.get("/email-auth/{domain}")
 def investigate_email_auth(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
-
-    return check_email_authentication(domain)
+    return checks.email_check(_require_domain(domain))
 
 
 @router.get("/url-reputation")
 def investigate_url_reputation(url: str = Query(..., description="Full URL to check, e.g. https://example.com")):
-    return check_url_reputation(url)
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or len(url) > 2048:
+        raise HTTPException(status_code=400, detail="Enter a full http:// or https:// URL")
+    return checks.url_check(url)
 
 
-@router.get("/mitre/{domain}")
-def investigate_mitre(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
-
-    dns_records = get_dns_records(domain)
-    dns_findings = analyze_dns_security(dns_records)
-
-    email_result = check_email_authentication(domain)
-    email_findings = email_result["findings"]
-
-    all_findings = dns_findings + email_findings
-    mapped = map_findings_to_mitre(all_findings)
-
+@router.post("/summary")
+def investigate_summary(payload: AnalysisRequest):
+    domain = _require_domain(payload.domain)
+    findings = [SecurityFinding(severity=f.severity, message=f.message) for f in payload.findings]
     return {
         "domain": domain,
-        "mapped_techniques": mapped
+        "summary": generate_plain_english_summary(domain, findings),
+        "findings_analyzed": len(findings),
     }
-@router.get("/summary/{domain}")
-def investigate_summary(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
 
-    dns_records = get_dns_records(domain)
-    dns_findings = analyze_dns_security(dns_records)
 
-    email_result = check_email_authentication(domain)
-    email_findings = email_result["findings"]
+@router.post("/mitre")
+def investigate_mitre(payload: AnalysisRequest):
+    domain = _require_domain(payload.domain)
+    findings = [SecurityFinding(severity=f.severity, message=f.message) for f in payload.findings]
+    return {"domain": domain, "mapped_techniques": map_findings_to_mitre(findings)}
 
-    all_findings = dns_findings + email_findings
-    summary = generate_plain_english_summary(domain, all_findings)
 
-    return {
-        "domain": domain,
-        "summary": summary,
-        "findings_analyzed": len(all_findings)
-    }
 @router.get("/report/{domain}")
 def generate_report(domain: str):
-    if not DOMAIN_PATTERN.match(domain):
-        raise HTTPException(status_code=400, detail="Invalid domain format")
+    domain = _require_domain(domain)
+    try:
+        pdf_bytes = generate_full_report(domain)
+    except Exception:
+        logger.exception("Report generation failed for %s", domain)
+        raise HTTPException(status_code=500, detail="Report generation failed. Check the server logs.")
 
-    pdf_bytes = generate_full_report(domain)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={domain}_report.pdf"}
+        headers={"Content-Disposition": f"attachment; filename={domain}_report.pdf"},
     )
